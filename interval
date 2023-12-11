@@ -1,0 +1,361 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © fireflies_
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// 萤火虫指标 v2.0
+// 增加趋势通道形态判断
+// -----------------------
+// 萤火虫指标 v1.3
+// 增加历史高低点标示
+// -----------------------
+// 萤火虫指标 v1.2
+// 修改蓝色K线为预进场标记，绿色K线为持仓标记，红色为清仓标记
+// 增加警报
+// 优化老旧标记
+// 关键K快慢线默认3-6-9 中长线使用6-12-9 | 5-20-9
+// -----------------------
+// 萤火虫指标 v1.1
+// 加入通道线
+// 加入持仓K线颜色
+// 优化变量命名
+
+//@version=5
+indicator("FIREFLY INTERVAL v2.0", overlay = true)
+// strategy("FIREFLY", overlay = true)
+import TradingView/ta/5
+
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// ma趋势线
+// ---------------------------------------------------------------------------------------------------------------------------------
+src = close
+ma1_inp = input.int(25, "ma1")
+ma2_inp = input.int(99, "ma2")
+ma1 = ta.sma(src, ma1_inp)
+ma2 = ta.sma(src, ma2_inp)
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// 通过macd收脚与缩头的来判断进出场点
+// ---------------------------------
+// 当关键K出现，下一根K线的收盘价高于关键K的最高点，可考虑建仓，当前K若出现跌破关键K高点的情况，即不成立，考虑止损退出
+// ---------------------------------------------------------------------------------------------------------------------------------
+// 初始化macd
+macd_source = input.string(title = "MACD快慢线来源", defval = "SMA", options = ["SMA", "EMA"])
+macd_signal_source = input.string(title = "MACD信号来源", defval = "SMA", options = ["SMA", "EMA"])
+
+var int macd_fast_inp = na
+var int macd_slow_inp = na
+var int macd_signal_inp = na
+macd_value = input.string(title = "MACD灵敏度", defval = "CUSTOMIZE", options = ["SHORT", "MIDDLE", "LONG", "CUSTOMIZE"])
+if macd_value == "SHORT"
+	macd_fast_inp := 3
+	macd_slow_inp := 6
+	macd_signal_inp := 9
+if macd_value == "MIDDLE"
+	macd_fast_inp := 6
+	macd_slow_inp := 12
+	macd_signal_inp := 9
+if macd_value == "LONG"
+	macd_fast_inp := 5
+	macd_slow_inp := 20
+	macd_signal_inp := 9
+if macd_value == "CUSTOMIZE"
+	macd_fast_inp := input.int(3, "快线")
+	macd_slow_inp := input.int(22, "慢线")
+	macd_signal_inp := input.int(6, "平均线")
+
+// 柱状体
+macd_fast = macd_source == "SMA" ? ta.sma(src, macd_fast_inp) : ta.ema(src, macd_fast_inp)
+macd_slow = macd_source == "SMA" ? ta.sma(src, macd_slow_inp) : ta.ema(src, macd_slow_inp)
+macd_signal = macd_signal_source == "SMA" ? ta.sma((macd_fast - macd_slow), macd_signal_inp) : ta.ema((macd_fast - macd_slow), macd_signal_inp)
+hist = macd_fast - macd_slow - macd_signal
+
+
+// 牛关键K
+var float bull_key_high = na                        // 关键K的最高价
+var float bull_key_close = na                       // 关键k的收盘价
+var float bull_key_low = na                         // 关键K的最低价
+var label bull_key_label = na                       // 关键K的标签   
+var bull_key_line = array.new_line()                // 关键K的线段数组
+var int bull_key_index = na                         // 关键K的索引
+var float bull_key_atr_low = na                     // 关键K的真实波动幅度均值的下差值
+var float bull_key_atr_high = na                    // 关键K的真实波动幅度均值的上差值
+var line bull_key_line_low = na                     // 关键K的通道的下沿
+var line bull_key_line_high = na                    // 关键K的通道的上沿
+var line bull_key_line_low_dashed = na              // 关键K的通道的下沿延长线
+var line bull_key_line_high_dashed = na             // 关键K的通道的上沿延长线
+var float bull_key_save_high = na                   // 关键K出现进场信号的最高价
+var float bull_key_save_low = na                    // 关键K出现进场信号的最低价
+var float bull_passkey_high = na                    // 关键K被突破的最高价
+var float bull_passkey_low = na                     // 关键K被突破的最低价
+var int bull_key_save_index = na                    // 关键K出现进场信号存储的索引
+var line bull_line_high = na                        // 关键K出现进场信号的支撑位上沿
+var line bull_line_low = na                         // 关键K出现进场信号的支撑位下沿
+var float bull_key_stop = na                        // 关键K的止损位
+var float bull_key_profit = na                      // 关键K的止盈位
+var line bull_stop_line = na                        // 关键K出现进场信号的止损线
+var line bull_profit_line = na                      // 关键K出现进场信号的止盈线
+var float bull_passkey_stop = na                    // 关键K出现进场信号的止损价
+var float bull_passkey_profit = na                  // 关键K出现进场信号的止盈价
+var label bull_key_stop_label = na                  // 止损标签
+var bool bull_stop_isTrue = false                   // 止损布尔值
+var label bull_reduce = na                          // 减仓标签
+var bool bull_reduce_isTrue = false                 // 减仓布尔值
+var bool bull_reverse_isTrue = false                // 反转信号布尔值
+var label bull_reverse_label = na                   // 反转信号标签
+var bool bull_out_isTrue = false                    // 出场信号布尔值
+var label bull_out_label = na                       // 出场信号标签
+var label bull_in_label = na                        // 进场信号标签
+var bool bull_in_isTrue = false                     // 进场信号布尔值
+
+// 熊关键K
+var float bear_key_low = na                         // 关键K的最低价
+var float bear_key_high = na                        // 关键K的最高价
+var float bear_key_close = na                       // 关键k的收盘价
+var label bear_key_label = na                       // 关键K的标签   
+var bear_key_line = array.new_line()                // 关键K的线段数组
+var int bear_key_index = na                         // 关键K的索引
+var float bear_key_atr_low = na                     // 关键K的真实波动幅度均值的下差值
+var float bear_key_atr_high = na                    // 关键K的真实波动幅度均值的上差值
+var line bear_key_line_low = na                     // 关键K的通道的下沿
+var line bear_key_line_high = na                    // 关键K的通道的上沿
+var line bear_key_line_low_dashed = na              // 关键K的通道的下沿延长线
+var line bear_key_line_high_dashed = na             // 关键K的通道的上沿延长线
+
+
+// ATR input值
+atr_inp = input.int(14, title="ATR周期")
+atr_value = ta.atr(atr_inp)
+stop_ipt = input.float(0.009, "止损基础值") // 以止损$2计算，2/仓位/close
+
+if hist < 0
+    if hist[1] < hist 
+        if hist[2] > hist[1]
+            bull_key_stop := close - close * stop_ipt
+            bull_key_profit := close + close * stop_ipt * 4
+            // 最后一次收脚区域
+            label.delete(bull_key_label)
+            // bull_key_label := label.new(bar_index, low, text = "high: " + str.tostring(high) + "\nlow: " + str.tostring(low), style = label.style_label_up, color = color.rgb(39, 176, 85), yloc = yloc.belowbar, textcolor = color.white, size = size.tiny)
+            bull_key_label := label.new(bar_index, low, text = "L", style = label.style_label_up, color = color.rgb(39, 176, 85), yloc = yloc.belowbar, textcolor = color.white, size = size.tiny)
+            bull_key_high := high
+            bull_key_close := close
+            bull_key_low := low
+            bull_in_isTrue := true //出现关键k时标记为true
+
+            // 绘制关键K通道线
+            bear_key_atr_low := low - atr_value
+            bear_key_atr_high := high + atr_value
+            bear_key_index := bar_index
+            // line.delete(bear_key_line_low)
+            // line.delete(bear_key_line_high)
+            line.delete(bear_key_line_low_dashed)
+            line.delete(bear_key_line_high_dashed)
+            // bear_key_line_low := line.new(bear_key_index, bear_key_atr_low, bull_key_index, bull_key_atr_low, width = 2, color = color.red)
+            // bear_key_line_high := line.new(bear_key_index, bear_key_atr_high, bull_key_index, bull_key_atr_high, width = 2, color = color.red)
+            bear_key_line_low_dashed := line.new(bull_key_index, bull_key_atr_low, bear_key_index, bear_key_atr_low, width = 1, color = color.rgb(255, 82, 82, 60), style = line.style_dashed, extend = extend.right)
+            bear_key_line_high_dashed := line.new(bull_key_index, bull_key_atr_high, bear_key_index, bear_key_atr_high, width = 1, color = color.rgb(255, 82, 82, 60), style = line.style_dashed, extend = extend.right)
+else
+    if hist[1] > hist
+        if hist[2] < hist[1]
+            // 最后一次缩头区域
+            label.delete(bear_key_label)
+            label.delete(bull_reverse_label)
+            // bear_key_label := label.new(bar_index, high, text = "high: " + str.tostring(high) + "\nlow: " + str.tostring(low), style = label.style_label_down, color = color.rgb(176, 39, 39), yloc = yloc.abovebar, textcolor = color.white, size = size.tiny)
+            bear_key_label := label.new(bar_index, high, text = "H", style = label.style_label_down, color = color.rgb(176, 39, 39), yloc = yloc.abovebar, textcolor = color.white, size = size.tiny)
+            bear_key_low := low
+            bear_key_high := high
+            bear_key_close := close
+            bull_out_isTrue := true
+            bull_reverse_isTrue := true
+
+            // 绘制关键K通道线
+            bull_key_atr_low := low - atr_value
+            bull_key_atr_high := high + atr_value
+            bull_key_index := bar_index
+            line.delete(bull_key_line_low)
+            line.delete(bull_key_line_high)
+            line.delete(bull_key_line_low_dashed)
+            line.delete(bull_key_line_high_dashed)
+            bull_key_line_low := line.new(bear_key_index, bear_key_atr_low, bull_key_index, bull_key_atr_low, width = 2, color = color.green, extend = extend.none)
+            bull_key_line_high := line.new(bear_key_index, bear_key_atr_high, bull_key_index, bull_key_atr_high, width = 2, color = color.green, extend = extend.none)
+            bull_key_line_low_dashed := line.new(bear_key_index, bear_key_atr_low, bull_key_index, bull_key_atr_low, width = 1, style = line.style_dashed, color = color.rgb(76, 175, 79, 60), extend = extend.right)
+            bull_key_line_high_dashed := line.new(bear_key_index, bear_key_atr_high, bull_key_index, bull_key_atr_high, width = 1, style = line.style_dashed, color = color.rgb(76, 175, 79, 60), extend = extend.both)
+
+
+// 买点与止损点
+// ---------------------------------------------------
+if  bull_in_isTrue and close > bull_key_high
+    bull_passkey_stop := close - close * stop_ipt //高频止损价算法：进场K的收盘价减去0.0033（以manausdt的$13为保证金，$2的止损价换算）
+    bull_passkey_profit := close + close * stop_ipt * 4 //高频止盈价算法：0.0033*4(按1：4的盈亏比换算)
+    label.delete(bull_in_label)
+    bull_in_label := label.new(bar_index, high, text = "B", style = label.style_label_lower_right, color = color.rgb(0, 179, 249, 10), textcolor = color.white, size = size.tiny)
+    line.delete(bull_stop_line)// 止损线
+    bull_stop_line := line.new(bar_index[1], bull_passkey_stop, bar_index, bull_passkey_stop, width=1, color=color.rgb(254, 4, 204), extend = extend.right, style = line.style_dashed)
+    // line.delete(bull_profit_line)// 止盈线
+    // bull_profit_line := line.new(bar_index[1], bull_passkey_profit, bar_index, bull_passkey_profit, width=1, color=color.rgb(251, 2, 218), extend = extend.right, style = line.style_dashed)
+    bull_in_isTrue := false
+    bull_stop_isTrue := true
+    bull_reduce_isTrue := true
+    label.delete(bull_reduce)
+    label.delete(bull_key_stop_label)
+    label.delete(bull_out_label)
+    label.delete(bull_reverse_label)
+    bull_key_save_high := bull_key_high
+    bull_key_save_low := bull_key_low
+    bull_passkey_high := high
+    bull_passkey_low := low
+
+if bull_reduce_isTrue and close < bull_key_low
+    label.delete(bull_reduce)
+    bull_reduce := label.new(bar_index, high, text = "reduce", style = label.style_square, size = size.tiny, color = color.rgb(248, 17, 160, 50), textcolor = color.rgb(249, 4, 196))
+    bull_reduce_isTrue := false
+
+if bull_stop_isTrue and close < bull_passkey_stop
+    label.delete(bull_key_stop_label)
+    bull_key_stop_label := label.new(bar_index, low, text = "stop", style = label.style_xcross, color = color.rgb(249, 44, 235), textcolor = color.rgb(248, 6, 212), size = size.tiny)
+    bull_stop_isTrue := false
+
+// 卖点
+// ---------------------------------------------------
+if bull_out_isTrue and close < bear_key_low
+    bull_key_low := low
+    label.delete(bull_out_label)
+    bull_out_label := label.new(bar_index, low, text = "S", style = label.style_label_upper_right, color = color.rgb(155, 39, 176, 10), textcolor = color.white, size = size.tiny)
+    bull_out_isTrue := false
+
+if bull_reverse_isTrue and close > bear_key_high
+    label.delete(bull_reverse_label)
+    bull_reverse_label := label.new(bar_index, high, text = "R", style = label.style_label_upper_right, color = color.rgb(155, 39, 176, 10), textcolor = color.white, size = size.tiny)
+    bull_reverse_isTrue := false
+
+
+// 绘制ma线
+plot(ma1, "ma1", color = color.rgb(251, 244, 249), linewidth = 1, display = display.none)
+plot(ma2, "ma2", color = color.rgb(73, 188, 255))
+// 标记所有收脚的点
+plotchar(series = hist < 0 and hist > hist[1] and hist[1] < hist[2], title = "标记收脚", char = "⇑", location = location.belowbar, color = color.green, size = size.tiny)
+// 标记所有缩头的点
+plotchar(series = hist > 0 and hist < hist[1] and hist[1] > hist[2], title = "标记缩头", char = "⇓", location = location.abovebar, color = color.red, size = size.tiny)
+
+// 标记K线颜色
+// barcolor(hist < 0 and close > close[1] and close > bull_key_high ? color.blue : na)
+// barcolor(hist > 0 and close >= bull_key_save_high ? color.rgb(76, 175, 91) : color.rgb(246, 98, 30))
+// barcolor(close < bull_key_low ? color.rgb(246, 98, 30) : na)
+// barcolor(close >= bull_key_save_high ? color.rgb(76, 175, 91) : color.rgb(246, 98, 30))
+// barcolor(close > bull_key_save_high and hist > 0 ? color.rgb(76, 175, 91) : color.rgb(246, 98, 30))
+barcolor(close > bull_key_save_high and close > bear_key_low ? color.rgb(76, 175, 91) : color.rgb(246, 98, 30))
+// barcolor(close > bull_key_save_high and close > open[1] ? color.rgb(76, 175, 91) : color.rgb(246, 98, 30))
+// 绘制平仓线
+plot(bull_key_save_high, title = "平仓", color = color.rgb(252, 178, 4), linewidth = 2, style = plot.style_cross)
+
+//--------------------------------------------
+
+// 开盘时间线
+plot((time == timestamp("UTC+8", year,month,dayofmonth,08,0)) ? close*2 : na, color = color.rgb(82, 163, 255, 70), title = "开盘时间线", style = plot.style_histogram)
+// 前一天的高低点
+his_high = request.security(syminfo.tickerid, "D", high)
+his_low = request.security(syminfo.tickerid, "D", low)
+var line his_high_line = na
+var line his_low_line = na
+// plot(his_high[1], color = color.rgb(250, 213, 213, 70), linewidth = 1, style = plot.style_stepline)
+// plot(his_low[1], color = color.rgb(207, 255, 209, 70), linewidth = 1, style = plot.style_stepline)
+line.delete(his_high_line)
+his_high_line := line.new(bar_index[1], his_high[1], bar_index, his_high[1], width = 1, color = color.rgb(247, 201, 99, 100), style = line.style_dashed, extend = extend.both)
+line.delete(his_low_line)
+his_low_line := line.new(bar_index[1], his_low[1], bar_index, his_low[1], width = 1, color = color.rgb(247, 201, 99, 100), style = line.style_dashed, extend = extend.both)
+linefill.new(his_high_line, his_low_line, color.rgb(83, 217, 247, 90))
+
+//--------------------------------------------
+// 标记定义K线内最高的k，并绘制支撑阻力线
+// 记录通道形态的变化，以判断下一阶段的涨跌情况
+// x + x*2+1 = y
+// x=(y-1)/3
+bar_num = input.int(10, "K线数量")
+var float bar_highest = na
+var float bar_lowest = na
+var int bar_highindex = bar_index
+var int bar_lowindex = bar_index
+bar_highest_isture = high[bar_num] == ta.highest(high, bar_num * 2 + 1)
+bar_lowest_isture = low[bar_num] == ta.lowest(low, bar_num * 2 + 1)
+// plotchar(bar_highest_isture ? high[bar_num] : na, char = "*", text = "H", offset = -bar_num)
+// plotchar(bar_lowest_isture ? low[bar_num] : na, char = "*", text = "L", offset = -bar_num, location = location.belowbar)
+ 
+// 支撑与阻力线
+var bull_arr_line = array.new_line()
+var bear_arr_line = array.new_line()
+// 通道线
+var line aisle_top_line = na
+var line aisle_top_line1 = na
+var line aisle_bottom_line = na
+var float atr_num = na
+if bar_highest_isture
+    bar_highest := high[bar_num]
+    bar_highindex := bar_index - bar_num
+    array.push(bull_arr_line, line.new(bar_highindex, bar_highest, bar_index, bar_highest, width=1, color=color.red, extend = extend.right))
+    // 通道线
+    line.delete(aisle_top_line)
+    aisle_top_line := line.new(bar_highindex[bar_num*4], bar_highest[bar_num*4], bar_highindex[bar_num], bar_highest[bar_num], width = 1, color = color.rgb(116, 83, 247), style = line.style_solid, extend = extend.right)
+    atr_num := atr_value*4
+    line.delete(aisle_top_line1)
+    aisle_top_line1 := line.new(bar_highindex[bar_num*4], bar_highest[bar_num*4]-atr_num, bar_highindex[bar_num], bar_highest[bar_num]-atr_num, width = 1, color = color.rgb(247, 201, 83), style = line.style_dashed, extend = extend.right)
+
+if bar_lowest_isture
+    bar_lowest := low[bar_num]
+    bar_lowindex := bar_index - bar_num
+    array.push(bear_arr_line, line.new(bar_lowindex, bar_lowest, bar_index, bar_lowest, width=1, color=color.green, extend = extend.right))
+    // 通道线
+    line.delete(aisle_bottom_line)
+    aisle_bottom_line := line.new(bar_lowindex[bar_num*4], bar_lowest[bar_num*4], bar_lowindex[bar_num], bar_lowest[bar_num], width = 1, color = color.rgb(116, 83, 247), style = line.style_solid, extend = extend.right)
+
+
+
+bull_line_inp = input.int(2, "阻力线")
+if array.size(bull_arr_line) > bull_line_inp
+    bullal = array.shift(bull_arr_line)
+    line.delete(bullal)
+bear_line_inp = input.int(2, "支撑线")
+if array.size(bear_arr_line) > bear_line_inp
+    bearal = array.shift(bear_arr_line)
+    line.delete(bearal)
+
+//--------------------------------------------
+// 表格
+text_size = size.normal
+text_color = #ffffff
+bg_color_default = #000000
+bg_color_red = color.red
+bg_color_green = color.green
+tb_stop = bull_key_save_high-atr_value
+tbl = table.new(position=position.bottom_right, columns=1, rows=3, frame_width=4, frame_color=#2F4F4F, border_width=2, border_color=#2F4F4F)
+table.cell(tbl, 0, 0, "止损价", text_color=text_color, text_size=text_size, bgcolor=bg_color_default)
+table.cell(tbl, 0, 1, str.tostring(tb_stop), text_color=text_color, text_size=text_size, bgcolor=close > tb_stop ? bg_color_green : bg_color_red)
+table.cell(tbl, 0, 2, str.tostring(bull_passkey_stop), text_color=text_color, text_size=text_size, bgcolor=close > tb_stop ? bg_color_green : bg_color_red)
+
+//--------------------------------------------
+
+// 创建警报选项
+// alertcondition(close < open, title='test', message='red')
+// 警报
+var bool alert_buy_isTrue = true
+var bool alert_sell_isTrue = true
+
+if close > open[1] and close >= bull_key_save_high and alert_buy_isTrue
+    alert_buy_isTrue := false
+    alert_sell_isTrue := true
+    alert("开多信号,回踩不破上车! " + 
+     "当前收盘价:" + str.tostring(close) + 
+     ",关键K最高价:" + str.tostring(bull_key_save_high) +
+     ",关键K最低价:" + str.tostring(bull_key_low), 
+     alert.freq_once_per_bar_close)
+if (close < bull_key_save_high or close < bull_key_low) and alert_sell_isTrue
+    alert_sell_isTrue := false
+    alert_buy_isTrue := true
+    alert("平多信号，落袋为安，再接再励!" + 
+     "当前收盘价:" + str.tostring(close) +
+     ",关键K最高价:" + str.tostring(bull_key_save_high) +  
+     ",关键K最低价:" + str.tostring(bull_key_low), 
+     alert.freq_once_per_bar_close)
+
+
+
